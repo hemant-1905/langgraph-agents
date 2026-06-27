@@ -1,87 +1,61 @@
-
+from langchain_core.messages import AIMessage, ToolMessage
+from langgraph.graph import END, START, StateGraph, MessagesState
 from typing import TypedDict, Annotated
-from dotenv import load_dotenv
-from IPython.display import display, Image
-import os
 
-load_dotenv()
+from chains import revisor, first_responder
+from tool_executor import execute_tools
 
-os.environ["LANGCHAIN_ENDPOINT"] = "https://eu.api.smith.langchain.com"
-os.environ["LANGCHAIN_TRACING_V2"]="true"
-os.environ["LANGCHAIN_API_KEY"] = os.getenv("LANGCHAIN_API_KEY")
-os.environ["LANGCHAIN_PROJECT"] = os.getenv("LANGCHAIN_PROJECT")
+MAX_ITERATIONS = 4
 
 
-from langgraph.graph import StateGraph, END, START, add_messages
-from chains import generation_chain, reflection_chain
-from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
-
-class MessageGraph(TypedDict):
-    messages: Annotated[list[BaseMessage], add_messages]
-
-REFLECTION = "reflect"
-GENERATION = "generate"
-
-def generation_node(state: MessageGraph):
-    return {"messages": [generation_chain.invoke({"messages": state["messages"]})]}
-
-def reflection_node(state: MessageGraph):
-    res = reflection_chain.invoke({"messages": state["messages"]})
-    return {"messages": [HumanMessage(content=res.content)]}
-
-builder = StateGraph(MessageGraph)
-builder.add_node(GENERATION, generation_node)
-builder.add_node(REFLECTION, reflection_node)
-##builder.set_entry_point(GENERATION)
-builder.add_edge(START, GENERATION)
+def draft_node(state: MessagesState):
+    """Draft the initial response."""
+    response = first_responder.invoke({"messages": state["messages"]})
+    return {"messages": [response]}
 
 
-def should_continue(state: MessageGraph):
-    if len(state["messages"]) > 3:
+def revise_node(state: MessagesState):
+    """Revise the answer based on tool results."""
+    response = revisor.invoke({"messages": state["messages"]})
+    return {"messages": [response]}
+
+
+def event_loop(state: MessagesState):
+    """Determine whether to continue or end based on iteration count."""
+    count_tool_visits = sum(
+        isinstance(item, ToolMessage) for item in state["messages"]
+    )
+    num_iterations = count_tool_visits
+    if num_iterations > MAX_ITERATIONS:
         return END
-    return REFLECTION
+    return "execute_tools"
 
-builder.add_edge(REFLECTION, GENERATION)
-builder.add_conditional_edges(
-    GENERATION,
-    should_continue,
-    {
-        REFLECTION: REFLECTION,
-        END: END,
-    },
-)
 
+builder = StateGraph(MessagesState)
+builder.add_node("draft", draft_node)
+builder.add_node("execute_tools", execute_tools)
+builder.add_node("revise", revise_node)
+builder.add_edge(START, "draft")
+builder.add_edge("draft", "execute_tools")
+builder.add_edge("execute_tools", "revise")
+builder.add_conditional_edges("revise", event_loop, ["execute_tools", END])
 graph = builder.compile()
+
 print(graph.get_graph().draw_mermaid())
-graph.get_graph().print_ascii()
-
-# try:
-#     display(Image(graph.get_graph().draw_mermaid_png()))
-# except Exception as e:
-#     print("Could not display graph as PNG. Please ensure you have the required dependencies installed.")
-#     print(f"Error: {e}")
 
 
-if __name__ == "__main__":
-    print("Hello LangGraph")
-    inputs = {
+res = graph.invoke(
+    {
         "messages": [
-            HumanMessage(
-                content="""Make this tweet better:"
-                                    @LangChainAI
-            — newly Tool Calling feature is seriously underrated.
-
-            After a long wait, it's  here- making the implementation of agents across different models with function calling - super easy.
-
-            Made a video covering their newest blog post
-
-                                  """
-            )
+            {
+                "role": "user",
+                "content": "Write about AI-Powered SOC / autonomous soc problem domain, list startups that do that and raised capital.",
+            }
         ]
     }
-    # response = graph.invoke(inputs)
-    # print(response)
-
-    for event in graph.stream(inputs):
-        print("=" * 80)
-        print(event)
+)
+# Extract the final answer from the last message with tool calls
+last_message = res["messages"][-1]
+if isinstance(last_message, AIMessage) and last_message.tool_calls:
+    print(last_message.tool_calls[0]["args"]["answer"])
+print(res)

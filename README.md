@@ -1,57 +1,232 @@
-# LangGraph Reflection Agent
+# LangGraph Reflexion Agent
 
-A **tweet refinement agent** built with [LangGraph](https://github.com/langchain-ai/langgraph) that iteratively improves a tweet using a generate → reflect → generate loop powered by a Groq-hosted LLM.
+A research-focused LangGraph agent that iteratively refines answers through a **draft → search → revise** loop. The agent uses Groq's LLM for generation and Tavily for web search, with structured output validation via Pydantic models.
 
 ## What it does
 
-1. **Generate** — a Twitter influencer assistant LLM writes an improved version of your tweet.
-2. **Reflect** — a second LLM persona (a viral Twitter critic) critiques the generated tweet for tone, length, virality, and style.
-3. **Loop** — the critique is fed back to the generator for another pass. This repeats until a quality threshold (3 messages) is reached.
-4. **Output** — the final polished tweet is printed to the terminal, along with an ASCII graph of the agent's state machine.
+The reflexion agent tackles open-ended research questions by:
 
-The agent graph looks like this:
+1. **Draft** — generates an initial detailed answer (~200 words)
+2. **Search** — executes web queries to gather evidence
+3. **Revise** — improves the answer using search results, removing superfluous claims and adding citations
 
-start → generate ⇄ reflect → end
+This cycle repeats up to 4 times (configurable) to maximize factual grounding and answer quality.
+
+### Example use case
+
+**Input:** *"Write about AI-Powered SOC / autonomous SOC problem domain, list startups that do that and raised capital."*
+
+**Output:** A well-researched summary with:
+- Comprehensive answer with numerical citations
+- Reflection on missing/superfluous information
+- List of web search queries used
+- References section with source URLs
+
+## Architecture
+
+```
+START → draft_node → execute_tools → revise_node → (loop or END)
+                          ↑                ↓
+                          └────conditionally────┘
+```
+
+**Max iterations:** 4 tool calls (configurable via `MAX_ITERATIONS` in main.py)
 
 ## Project structure
 
-├── main.py # LangGraph state machine definition and entry point
-├── chains.py # LLM prompt chains (generation + reflection)
-├── pyproject.toml # Project dependencies managed by uv
-├── .python-version # Pins Python 3.14.3
-└── .env # API keys (not committed to git)
-
+```
+.
+├── main.py              # LangGraph state machine & entrypoint
+├── chains.py            # LLM prompt chains (draft & revise)
+├── tool_executor.py     # Tavily search tool integration
+├── schemas.py           # Pydantic output models
+├── pyproject.toml       # Dependencies (uv)
+├── .env                 # API keys (not committed)
+└── .python-version      # Python version pin
+```
 
 ## Prerequisites
 
-- [uv](https://docs.astral.sh/uv/) — Python package manager
-- Python 3.14.3 (managed automatically by uv via `.python-version`)
-- A [Groq](https://console.groq.com/) API key
-- A [LangSmith](https://smith.langchain.com/) API key (for tracing)
+- Python 3.12+ (tested on 3.12, 3.13)
+- [uv](https://docs.astral.sh/uv/) package manager
+- API keys:
+  - **Groq** (for qwen model)
+  - **Tavily** (for web search)
+  - **LangSmith** (for LangChain tracing — optional)
 
 ## Setup
 
-### 1. Clone and enter the repo
+### 1. Clone and enter repo
 
 ```bash
 git clone <your-repo-url>
 cd langgraph-agents
+```
 
+### 2. Set Python version
+
+```bash
+echo "3.12" > .python-version
+```
+
+### 3. Create and sync venv
+
+```bash
 uv venv .venv --clear
 uv sync
-
-GROQ_API_KEY="your_groq_api_key_here"
-LANGCHAIN_API_KEY="your_langsmith_api_key_here"
-LANGCHAIN_PROJECT="reflect-agent"
-OPENAI_API_KEY=""                        # Optional, not used by default
-HUGGINGFACEHUB_API_TOKEN=""              # Optional, not used by default
-
-Running
-# Activate the virtual environment
 source .venv/bin/activate
+```
 
-# Run the agent
+### 4. Configure environment
+
+Create `.env` file with required API keys:
+
+```env
+GROQ_API_KEY="gsk_..."
+TAVILY_API_KEY="tvly-..."
+LANGCHAIN_API_KEY="lsv2_pt_..."  # Optional, for LangSmith tracing
+LANGCHAIN_PROJECT="reflexion-agent"
+```
+
+Get keys at:
+- **Groq:** https://console.groq.com/keys
+- **Tavily:** https://tavily.com/
+- **LangSmith:** https://smith.langchain.com/ (optional)
+
+## Running
+
+```bash
 python main.py
+```
 
-Tracing
-LangSmith tracing is enabled by default. View runs at https://eu.api.smith.langchain.com under the project name set in LANGCHAIN_PROJECT.
+This will:
+1. Print the Mermaid graph diagram
+2. Run the agent on the default prompt: *"Write about AI-Powered SOC / autonomous soc problem domain, list startups that do that and raised capital."*
+3. Print the final refined answer
+
+### Output format
+
+```python
+{
+  "answer": "...",  # ~200-250 word refined answer with citations
+  "reflection": {
+    "missing": "...",      # Information gaps identified
+    "superfluous": "..."   # Unnecessary claims to remove
+  },
+  "search_queries": [
+    "AI-powered SOC vendors",
+    "autonomous SOC startups funding",
+    ...
+  ],
+  "references": [
+    "https://example.com/1",
+    "https://example.com/2",
+    ...
+  ]
+}
+```
+
+## Architecture details
+
+### Nodes
+
+- **draft_node:** Invokes `first_responder` chain with 200-word instruction
+- **execute_tools:** Runs Tavily search on generated queries, up to max iterations
+- **revise_node:** Invokes `revisor` chain with search context and critique
+- **event_loop:** Conditional router — continues if iterations < 4, else END
+
+### LLM Configuration
+
+- **Model:** Groq's `qwen/qwen3-32b` (configurable)
+- **Temperature:** 0.7 (balances creativity and consistency)
+- **Tool binding:** Structured output via Pydantic models
+
+### Search Integration
+
+- **Tool:** Tavily API via `langchain_tavily.TavilySearch`
+- **Max results per query:** 5
+- **Queries per iteration:** Auto-generated by LLM based on reflection
+
+## Configuration
+
+Modify [main.py](main.py) to customize:
+
+```python
+MAX_ITERATIONS = 4  # Max tool calls (currently 4)
+```
+
+Modify [chains.py](chains.py) to customize:
+
+```python
+llm = ChatGroq(groq_api_key=groq_api_key, model_name="qwen/qwen3-32b", temperature=0.7)
+```
+
+## Tracing
+
+LangSmith tracing is automatically enabled if `LANGCHAIN_API_KEY` is set. View runs at:
+
+```
+https://smith.langchain.com/o/YOUR_ORG/projects/p/reflexion-agent
+```
+
+Each run includes:
+- Draft → execute tools → revise chain
+- Tool invocations with query/result details
+- Final structured output
+
+## Example workflow
+
+```bash
+$ python main.py
+---
+graph LR
+  START --> draft[draft_node]
+  draft --> execute_tools[execute_tools]
+  execute_tools --> revise[revise_node]
+  revise --> decide{event_loop}
+  decide -->|iterations < 4| execute_tools
+  decide -->|iterations >= 4| END
+---
+
+[Mermaid ASCII diagram printed]
+
+[Draft answer generated...]
+[Executing 2 Tavily searches...]
+[Revising based on 10 search results...]
+[Final answer output...]
+```
+
+## Troubleshooting
+
+### Import errors (typing_extensions)
+
+Ensure Python 3.12+:
+```bash
+python --version  # Should be 3.12.x or higher
+uv sync --refresh
+```
+
+### Missing Tavily API key
+
+Add `TAVILY_API_KEY` to `.env`:
+```bash
+echo 'TAVILY_API_KEY="tvly-..."' >> .env
+```
+
+### No search results
+
+- Verify Tavily API key is valid
+- Check internet connectivity
+- Try more specific search queries (edit in chains.py prompts)
+
+## Contributing
+
+PRs welcome! Areas for enhancement:
+- Different LLM providers (Claude, GPT-4, local Ollama)
+- Multiple search backends (Google, Bing)
+- Configurable iteration limits per run
+- Custom output formats (markdown, JSON export)
+
+## License
+
+MIT

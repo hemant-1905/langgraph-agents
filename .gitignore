@@ -8,3 +8,9 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Local vector DB / persistent storage
+.chroma/
+db/
+rag_embeddings/
+*.sqlite3

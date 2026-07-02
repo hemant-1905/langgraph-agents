@@ -1,232 +1,158 @@
-# LangGraph Reflexion Agent
+# Self-Corrective Agentic RAG Pipeline (LangGraph)
 
-A research-focused LangGraph agent that iteratively refines answers through a **draft → search → revise** loop. The agent uses Groq's LLM for generation and Tavily for web search, with structured output validation via Pydantic models.
+This project implements a self-corrective Agentic RAG workflow using LangGraph.
 
-## What it does
+It combines:
+- Query routing (vector store vs web search)
+- Retrieval and document relevance grading
+- Answer generation
+- Hallucination and answer-quality grading
+- Iterative correction path when answers are not supported or not useful
 
-The reflexion agent tackles open-ended research questions by:
+## Graph
 
-1. **Draft** — generates an initial detailed answer (~200 words)
-2. **Search** — executes web queries to gather evidence
-3. **Revise** — improves the answer using search results, removing superfluous claims and adding citations
+The latest generated graph image is available at:
+- [graph/graph.png](graph/graph.png)
 
-This cycle repeats up to 4 times (configurable) to maximize factual grounding and answer quality.
+You can also regenerate it by running:
 
-### Example use case
-
-**Input:** *"Write about AI-Powered SOC / autonomous SOC problem domain, list startups that do that and raised capital."*
-
-**Output:** A well-researched summary with:
-- Comprehensive answer with numerical citations
-- Reflection on missing/superfluous information
-- List of web search queries used
-- References section with source URLs
-
-## Architecture
-
-```
-START → draft_node → execute_tools → revise_node → (loop or END)
-                          ↑                ↓
-                          └────conditionally────┘
+```bash
+uv run python -m graph.graph
 ```
 
-**Max iterations:** 4 tool calls (configurable via `MAX_ITERATIONS` in main.py)
+## High-Level Flow
 
-## Project structure
+Pipeline entrypoint is in [main.py](main.py), and the graph is defined in [graph/graph.py](graph/graph.py).
 
-```
-.
-├── main.py              # LangGraph state machine & entrypoint
-├── chains.py            # LLM prompt chains (draft & revise)
-├── tool_executor.py     # Tavily search tool integration
-├── schemas.py           # Pydantic output models
-├── pyproject.toml       # Dependencies (uv)
-├── .env                 # API keys (not committed)
-└── .python-version      # Python version pin
-```
+Flow:
+1. Route question to `retrieve` or `websearch`
+2. If `retrieve`:
+	1. Retrieve candidate chunks from Chroma
+	2. Grade each chunk for relevance
+	3. If weak retrieval, branch to `websearch`
+3. Generate answer from current context
+4. Grade hallucination/support against retrieved facts
+5. Grade whether answer resolves the question
+6. If not useful/supported, loop back through correction path
+
+## Project Structure
+
+- [main.py](main.py): App entrypoint for invoking graph
+- [ingestion.py](ingestion.py): Builds/loads vector store retriever
+- [graph/graph.py](graph/graph.py): LangGraph workflow and routing logic
+- [graph/state.py](graph/state.py): Typed graph state schema
+- [graph/consts.py](graph/consts.py): Node name constants
+- [graph/chains/router.py](graph/chains/router.py): Route classifier chain
+- [graph/chains/retrieval_grader.py](graph/chains/retrieval_grader.py): Doc relevance grader
+- [graph/chains/generation_chain.py](graph/chains/generation_chain.py): Answer generation chain
+- [graph/chains/hallucination_grader.py](graph/chains/hallucination_grader.py): Grounding grader
+- [graph/chains/answer_grader.py](graph/chains/answer_grader.py): Final usefulness grader
+- [graph/nodes/retrieve.py](graph/nodes/retrieve.py): Retrieval node
+- [graph/nodes/grade_documents.py](graph/nodes/grade_documents.py): Retrieval filtering node
+- [graph/nodes/web_search.py](graph/nodes/web_search.py): Tavily augmentation node
+- [graph/nodes/generate.py](graph/nodes/generate.py): Generation node
+- [graph/chains/tests/test_chains.py](graph/chains/tests/test_chains.py): Chain-level tests
 
 ## Prerequisites
 
-- Python 3.12+ (tested on 3.12, 3.13)
-- [uv](https://docs.astral.sh/uv/) package manager
-- API keys:
-  - **Groq** (for qwen model)
-  - **Tavily** (for web search)
-  - **LangSmith** (for LangChain tracing — optional)
+- Python >= 3.11.3
+- uv
+- API keys in environment
 
-## Setup
-
-### 1. Clone and enter repo
+Install dependencies:
 
 ```bash
-git clone <your-repo-url>
-cd langgraph-agents
-```
-
-### 2. Set Python version
-
-```bash
-echo "3.12" > .python-version
-```
-
-### 3. Create and sync venv
-
-```bash
-uv venv .venv --clear
 uv sync
-source .venv/bin/activate
 ```
 
-### 4. Configure environment
+## Environment Variables
 
-Create `.env` file with required API keys:
+Create a `.env` file in project root with at least:
 
 ```env
-GROQ_API_KEY="gsk_..."
-TAVILY_API_KEY="tvly-..."
-LANGCHAIN_API_KEY="lsv2_pt_..."  # Optional, for LangSmith tracing
-LANGCHAIN_PROJECT="reflexion-agent"
+GROQ_API_KEY=your_groq_key
+TAVILY_API_KEY=your_tavily_key
+LANGCHAIN_API_KEY=your_langsmith_key_optional
+LANGCHAIN_PROJECT=reflexion-agent
+HUGGINGFACEHUB_API_TOKEN=your_hf_token_optional
 ```
 
-Get keys at:
-- **Groq:** https://console.groq.com/keys
-- **Tavily:** https://tavily.com/
-- **LangSmith:** https://smith.langchain.com/ (optional)
+Notes:
+- `GROQ_API_KEY` is required for routing, grading, and generation chains.
+- `TAVILY_API_KEY` is required for web search node.
+- `HUGGINGFACEHUB_API_TOKEN` is optional for the current embedding model (`sentence-transformers/all-mpnet-base-v2`), but recommended.
 
-## Running
+## Ingestion and Retriever
+
+Ingestion is handled in [ingestion.py](ingestion.py):
+- Loads 3 Lilian Weng posts
+- Splits into chunks
+- Uses Hugging Face embeddings (`sentence-transformers/all-mpnet-base-v2`)
+- Seeds Chroma collection (`rag-chroma`) in `.chroma` directory if empty
+
+Run ingestion:
 
 ```bash
-python main.py
+uv run python ingestion.py
 ```
 
-This will:
-1. Print the Mermaid graph diagram
-2. Run the agent on the default prompt: *"Write about AI-Powered SOC / autonomous soc problem domain, list startups that do that and raised capital."*
-3. Print the final refined answer
-
-### Output format
-
-```python
-{
-  "answer": "...",  # ~200-250 word refined answer with citations
-  "reflection": {
-    "missing": "...",      # Information gaps identified
-    "superfluous": "..."   # Unnecessary claims to remove
-  },
-  "search_queries": [
-    "AI-powered SOC vendors",
-    "autonomous SOC startups funding",
-    ...
-  ],
-  "references": [
-    "https://example.com/1",
-    "https://example.com/2",
-    ...
-  ]
-}
-```
-
-## Architecture details
-
-### Nodes
-
-- **draft_node:** Invokes `first_responder` chain with 200-word instruction
-- **execute_tools:** Runs Tavily search on generated queries, up to max iterations
-- **revise_node:** Invokes `revisor` chain with search context and critique
-- **event_loop:** Conditional router — continues if iterations < 4, else END
-
-### LLM Configuration
-
-- **Model:** Groq's `qwen/qwen3-32b` (configurable)
-- **Temperature:** 0.7 (balances creativity and consistency)
-- **Tool binding:** Structured output via Pydantic models
-
-### Search Integration
-
-- **Tool:** Tavily API via `langchain_tavily.TavilySearch`
-- **Max results per query:** 5
-- **Queries per iteration:** Auto-generated by LLM based on reflection
-
-## Configuration
-
-Modify [main.py](main.py) to customize:
-
-```python
-MAX_ITERATIONS = 4  # Max tool calls (currently 4)
-```
-
-Modify [chains.py](chains.py) to customize:
-
-```python
-llm = ChatGroq(groq_api_key=groq_api_key, model_name="qwen/qwen3-32b", temperature=0.7)
-```
-
-## Tracing
-
-LangSmith tracing is automatically enabled if `LANGCHAIN_API_KEY` is set. View runs at:
-
-```
-https://smith.langchain.com/o/YOUR_ORG/projects/p/reflexion-agent
-```
-
-Each run includes:
-- Draft → execute tools → revise chain
-- Tool invocations with query/result details
-- Final structured output
-
-## Example workflow
+## Run the Pipeline
 
 ```bash
-$ python main.py
----
-graph LR
-  START --> draft[draft_node]
-  draft --> execute_tools[execute_tools]
-  execute_tools --> revise[revise_node]
-  revise --> decide{event_loop}
-  decide -->|iterations < 4| execute_tools
-  decide -->|iterations >= 4| END
----
-
-[Mermaid ASCII diagram printed]
-
-[Draft answer generated...]
-[Executing 2 Tavily searches...]
-[Revising based on 10 search results...]
-[Final answer output...]
+uv run python main.py
 ```
 
-## Troubleshooting
+Default question in main is:
+- `agent memory`
 
-### Import errors (typing_extensions)
+You can modify that in [main.py](main.py) as needed.
 
-Ensure Python 3.12+:
+## Run Tests
+
 ```bash
-python --version  # Should be 3.12.x or higher
-uv sync --refresh
+uv run pytest graph/chains/tests/test_chains.py -s -v
 ```
 
-### Missing Tavily API key
+## Rate Limit Guidance
 
-Add `TAVILY_API_KEY` to `.env`:
+If you get provider rate limits:
+1. Avoid full `app.invoke(...)` while debugging graph shape.
+2. Render graph only via:
+
 ```bash
-echo 'TAVILY_API_KEY="tvly-..."' >> .env
+uv run python -m graph.graph
 ```
 
-### No search results
+3. Validate individual chains selectively rather than running end-to-end repeatedly.
 
-- Verify Tavily API key is valid
-- Check internet connectivity
-- Try more specific search queries (edit in chains.py prompts)
+## Important Current Behavior
 
-## Contributing
+- Graph image generation currently happens in [graph/graph.py](graph/graph.py) when run as module/script.
+- Retriever is initialized at import time in [ingestion.py](ingestion.py), which can make startup heavier.
 
-PRs welcome! Areas for enhancement:
-- Different LLM providers (Claude, GPT-4, local Ollama)
-- Multiple search backends (Google, Bing)
-- Configurable iteration limits per run
-- Custom output formats (markdown, JSON export)
+## Common Troubleshooting
 
-## License
+### 1) `python: command not found`
+Your shell may not have the venv active. Use `uv run ...` commands.
 
-MIT
+### 2) `USER_AGENT environment variable not set`
+This is a warning from web loaders. It is already defaulted in ingestion.
+
+### 3) Empty retrieval results
+Re-run ingestion once:
+
+```bash
+uv run python ingestion.py
+```
+
+### 4) Import path errors when running from subfolders
+Prefer running commands from project root.
+
+## Persistence and Git
+
+Local persistence paths are ignored in git via [.gitignore](.gitignore):
+- `.chroma/`
+- `db/`
+- `rag_embeddings/`
+- `*.sqlite3`
+

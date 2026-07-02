@@ -7,7 +7,7 @@ class GraphState(TypedDict):
    Attributes:
        question (str): The question being asked.
        generation (str): The generated response to the question.
-       web_search (str): The results of any web search performed.
+       web_search (bool): Indicates whether a web search was performed.
        documents (List[str]): A list of retrieved documents relevant to the question.
    """ 
 

@@ -1,158 +1,146 @@
-# Self-Corrective Agentic RAG Pipeline (LangGraph)
+# LangGraph ReACT Agent with SQLite Memory
 
-This project implements a self-corrective Agentic RAG workflow using LangGraph.
+This project is a LangGraph-based ReACT agent that can:
 
-It combines:
-- Query routing (vector store vs web search)
-- Retrieval and document relevance grading
-- Answer generation
-- Hallucination and answer-quality grading
-- Iterative correction path when answers are not supported or not useful
+- reason with an LLM,
+- call tools (Tavily search + custom temperature tool),
+- persist conversation state on disk using SQLite,
+- resume memory by session ID across runs.
 
-## Graph
+## Architecture
 
-The latest generated graph image is available at:
-- [graph/graph.png](graph/graph.png)
+The graph has two nodes:
 
-You can also regenerate it by running:
-
-```bash
-uv run python -m graph.graph
-```
-
-## High-Level Flow
-
-Pipeline entrypoint is in [main.py](main.py), and the graph is defined in [graph/graph.py](graph/graph.py).
+- agent_reason: calls the tool-enabled LLM
+- act: executes tool calls via ToolNode
 
 Flow:
-1. Route question to `retrieve` or `websearch`
-2. If `retrieve`:
-	1. Retrieve candidate chunks from Chroma
-	2. Grade each chunk for relevance
-	3. If weak retrieval, branch to `websearch`
-3. Generate answer from current context
-4. Grade hallucination/support against retrieved facts
-5. Grade whether answer resolves the question
-6. If not useful/supported, loop back through correction path
 
-## Project Structure
+1. Start at agent_reason
+2. If tool calls exist, route to act
+3. Return to agent_reason
+4. Stop when no tool calls remain
 
-- [main.py](main.py): App entrypoint for invoking graph
-- [ingestion.py](ingestion.py): Builds/loads vector store retriever
-- [graph/graph.py](graph/graph.py): LangGraph workflow and routing logic
-- [graph/state.py](graph/state.py): Typed graph state schema
-- [graph/consts.py](graph/consts.py): Node name constants
-- [graph/chains/router.py](graph/chains/router.py): Route classifier chain
-- [graph/chains/retrieval_grader.py](graph/chains/retrieval_grader.py): Doc relevance grader
-- [graph/chains/generation_chain.py](graph/chains/generation_chain.py): Answer generation chain
-- [graph/chains/hallucination_grader.py](graph/chains/hallucination_grader.py): Grounding grader
-- [graph/chains/answer_grader.py](graph/chains/answer_grader.py): Final usefulness grader
-- [graph/nodes/retrieve.py](graph/nodes/retrieve.py): Retrieval node
-- [graph/nodes/grade_documents.py](graph/nodes/grade_documents.py): Retrieval filtering node
-- [graph/nodes/web_search.py](graph/nodes/web_search.py): Tavily augmentation node
-- [graph/nodes/generate.py](graph/nodes/generate.py): Generation node
-- [graph/chains/tests/test_chains.py](graph/chains/tests/test_chains.py): Chain-level tests
+Memory persistence is enabled through LangGraph SqliteSaver and stored in a local database file named memory.db.
+
+## Project Files
+
+- main.py: graph creation, SQLite checkpointer wiring, invocation
+- nodes.py: agent reasoning node + tool node
+- react.py: LLM setup and tools
+- pyproject.toml: dependencies
+- memory.db: auto-created SQLite checkpoint store
 
 ## Prerequisites
 
-- Python >= 3.11.3
-- uv
-- API keys in environment
+- Python 3.11+
+- uv package manager
+- API keys:
+	- GROQ_API_KEY (required)
+	- TAVILY_API_KEY (required for web search tool)
+	- LANGCHAIN_API_KEY, LANGCHAIN_PROJECT (optional; for tracing)
 
-Install dependencies:
+## Setup
+
+1. Install dependencies:
 
 ```bash
 uv sync
 ```
 
-## Environment Variables
-
-Create a `.env` file in project root with at least:
+2. Create a .env file in the project root:
 
 ```env
 GROQ_API_KEY=your_groq_key
 TAVILY_API_KEY=your_tavily_key
-LANGCHAIN_API_KEY=your_langsmith_key_optional
-LANGCHAIN_PROJECT=reflexion-agent
-HUGGINGFACEHUB_API_TOKEN=your_hf_token_optional
+
+# Optional tracing
+LANGCHAIN_API_KEY=your_langsmith_key
+LANGCHAIN_PROJECT=your_project_name
 ```
 
-Notes:
-- `GROQ_API_KEY` is required for routing, grading, and generation chains.
-- `TAVILY_API_KEY` is required for web search node.
-- `HUGGINGFACEHUB_API_TOKEN` is optional for the current embedding model (`sentence-transformers/all-mpnet-base-v2`), but recommended.
+## How to Run
 
-## Ingestion and Retriever
-
-Ingestion is handled in [ingestion.py](ingestion.py):
-- Loads 3 Lilian Weng posts
-- Splits into chunks
-- Uses Hugging Face embeddings (`sentence-transformers/all-mpnet-base-v2`)
-- Seeds Chroma collection (`rag-chroma`) in `.chroma` directory if empty
-
-Run ingestion:
-
-```bash
-uv run python ingestion.py
-```
-
-## Run the Pipeline
+Run the agent:
 
 ```bash
 uv run python main.py
 ```
 
-Default question in main is:
-- `agent memory`
+You will see:
 
-You can modify that in [main.py](main.py) as needed.
+- a printed Session ID
+- a final model response
 
-## Run Tests
+## Session ID and Memory Persistence
 
-```bash
-uv run pytest graph/chains/tests/test_chains.py -s -v
-```
+The app uses thread_id for memory scoping:
 
-## Rate Limit Guidance
+- If SESSION_ID is provided, the same conversation thread is resumed.
+- If SESSION_ID is not provided, a new UUID is generated.
 
-If you get provider rate limits:
-1. Avoid full `app.invoke(...)` while debugging graph shape.
-2. Render graph only via:
+### Continue the same memory session
 
 ```bash
-uv run python -m graph.graph
+SESSION_ID=my-session-1 uv run python main.py
 ```
 
-3. Validate individual chains selectively rather than running end-to-end repeatedly.
+Run the same command again with the same SESSION_ID and memory context is reused from SQLite.
 
-## Important Current Behavior
-
-- Graph image generation currently happens in [graph/graph.py](graph/graph.py) when run as module/script.
-- Retriever is initialized at import time in [ingestion.py](ingestion.py), which can make startup heavier.
-
-## Common Troubleshooting
-
-### 1) `python: command not found`
-Your shell may not have the venv active. Use `uv run ...` commands.
-
-### 2) `USER_AGENT environment variable not set`
-This is a warning from web loaders. It is already defaulted in ingestion.
-
-### 3) Empty retrieval results
-Re-run ingestion once:
+### Start a fresh session
 
 ```bash
-uv run python ingestion.py
+SESSION_ID=my-session-2 uv run python main.py
 ```
 
-### 4) Import path errors when running from subfolders
-Prefer running commands from project root.
+This creates a separate memory thread in the same memory.db file.
 
-## Persistence and Git
+## How SQLite Memory Works Here
 
-Local persistence paths are ignored in git via [.gitignore](.gitignore):
-- `.chroma/`
-- `db/`
-- `rag_embeddings/`
-- `*.sqlite3`
+- SQLite DB file: memory.db
+- Checkpointer: SqliteSaver
+- Key for memory partitioning: configurable.thread_id
+- Persisted data includes messages and tool call history for each session
 
+## Verify Stored Session Memory
+
+Use this command to inspect the stored messages for a session:
+
+```bash
+SESSION_ID=my-session-1 uv run python -c "
+from main import app
+config = {'configurable': {'thread_id': 'my-session-1'}}
+state = app.get_state(config)
+for msg in state.values.get('messages', []):
+		print(msg.__class__.__name__, ':', str(msg.content)[:140])
+"
+```
+
+## Common Issues
+
+- Error: command not found: python
+	- Use uv run python main.py instead of python main.py.
+
+- No temperature/search answer
+	- Ensure GROQ_API_KEY and TAVILY_API_KEY are present in .env.
+
+- Memory not resuming
+	- Reuse exactly the same SESSION_ID value.
+
+## Quick Execution Examples
+
+```bash
+# New session (random UUID)
+uv run python main.py
+
+# Fixed session (persistent thread)
+SESSION_ID=000002 uv run python main.py
+
+# Re-run same session later
+SESSION_ID=000002 uv run python main.py
+```
+
+## Notes
+
+- The graph image is exported to agent_reason.png.
+- SQLite file memory.db is local, simple, and good for single-machine persistence.

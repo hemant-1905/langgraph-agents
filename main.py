@@ -14,4 +14,6 @@ os.environ["LANGCHAIN_PROJECT"] = os.getenv("LANGCHAIN_PROJECT")
 
 if __name__ == "__main__":
     print("Starting the LangGraph application...")
-    print(app.invoke({"question": "who are the top runners for fifa wc 2026?"}))
+    print(app.invoke({"question": "agent memory"}))
+
+    ##try this question for the other flow: "Will India dominate the world order?"
